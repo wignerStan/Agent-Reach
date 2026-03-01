@@ -76,7 +76,7 @@ def main():
     p_conf = sub.add_parser("configure", help="Set a config value or auto-extract from browser")
     p_conf.add_argument("key", nargs="?", default=None,
                         choices=["proxy", "github-token", "groq-key",
-                                 "twitter-cookies", "youtube-cookies"],
+                                 "twitter-cookies", "reddit-cookies", "youtube-cookies"],
                         help="What to configure (omit if using --from-browser)")
     p_conf.add_argument("value", nargs="*", help="The value(s) to set")
     p_conf.add_argument("--from-browser", metavar="BROWSER",
@@ -101,6 +101,10 @@ def main():
 
     # ── version ──
     sub.add_parser("version", help="Show version")
+
+    # ── sync-to-profile ──
+    p_sync = sub.add_parser("sync-to-profile", help="Sync cookies and sessions to a browser profile (Playwright/Chrome)")
+    p_sync.add_argument("profile_path", help="Path to browser profile directory")
 
     args = parser.parse_args()
 
@@ -127,8 +131,11 @@ def main():
         _cmd_install(args)
     elif args.command == "configure":
         _cmd_configure(args)
+    elif args.command == "sync-to-profile":
+        _cmd_sync_profile(args)
     elif args.command == "uninstall":
         _cmd_uninstall(args)
+
 
 
 # ── Command handlers ────────────────────────────────
@@ -577,7 +584,7 @@ def _install_mcporter_safe():
 
 def _detect_environment():
     """Auto-detect if running on local computer or server."""
-    import os
+
 
     # Check common server indicators
     indicators = 0
@@ -653,11 +660,31 @@ def _cmd_configure(args):
         print("Usage: agent-reach configure <key> <value>")
         print("   or: agent-reach configure --from-browser chrome")
         return
-
     value = " ".join(args.value) if args.value else ""
     if not value:
         print(f"Missing value for {args.key}")
         return
+
+    def _sync_to_xreach(auth_token, ct0):
+        """Sync credentials to xreach's session.json so xreach auth check works."""
+        try:
+            import json
+            xfetch_dir = os.path.join(os.path.expanduser("~"), ".config", "xfetch")
+            os.makedirs(xfetch_dir, exist_ok=True)
+            session_path = os.path.join(xfetch_dir, "session.json")
+            session_data = {}
+            if os.path.exists(session_path):
+                with open(session_path, "r", encoding="utf-8") as sf:
+                    session_data = json.load(sf)
+            session_data["authToken"] = auth_token
+            session_data["ct0"] = ct0
+            with open(session_path, "w", encoding="utf-8") as sf:
+                json.dump(session_data, sf, indent=2)
+            os.chmod(session_path, 0o600)
+            return True
+        except Exception as e:
+            print(f"⚠️ Could not sync to xreach session.json: {e}")
+            return False
 
     if args.key == "proxy":
         config.set("reddit_proxy", value)
@@ -705,25 +732,10 @@ def _cmd_configure(args):
             config.set("twitter_auth_token", auth_token)
             config.set("twitter_ct0", ct0)
 
-            # Sync credentials to xreach's session.json so xreach auth check works
-            try:
-                import json
-                xfetch_dir = os.path.join(os.path.expanduser("~"), ".config", "xfetch")
-                os.makedirs(xfetch_dir, exist_ok=True)
-                session_path = os.path.join(xfetch_dir, "session.json")
-                session_data = {}
-                if os.path.exists(session_path):
-                    with open(session_path, "r", encoding="utf-8") as sf:
-                        session_data = json.load(sf)
-                session_data["authToken"] = auth_token
-                session_data["ct0"] = ct0
-                with open(session_path, "w", encoding="utf-8") as sf:
-                    json.dump(session_data, sf, indent=2)
-                os.chmod(session_path, 0o600)
+            if _sync_to_xreach(auth_token, ct0):
                 print("✅ Twitter cookies configured (synced to xreach)!")
-            except Exception as e:
+            else:
                 print("✅ Twitter cookies configured!")
-                print(f"⚠️ Could not sync to xreach session.json: {e}")
 
             print("Testing Twitter access...", end=" ")
             try:
@@ -732,7 +744,6 @@ def _cmd_configure(args):
                 if not xreach:
                     print("⚠️ xreach CLI not installed. Run: npm install -g xreach-cli")
                 else:
-                    import os
                     env = os.environ.copy()
                     env["AUTH_TOKEN"] = auth_token
                     env["CT0"] = ct0
@@ -753,6 +764,10 @@ def _cmd_configure(args):
             print("   1. agent-reach configure twitter-cookies AUTH_TOKEN CT0")
             print('   2. agent-reach configure twitter-cookies "auth_token=xxx; ct0=yyy; ..."')
 
+    elif args.key == "reddit-cookies":
+        config.set("reddit_cookies", value)
+        print("✅ Reddit cookies configured!")
+
     elif args.key == "youtube-cookies":
         config.set("youtube_cookies_from", value)
         print(f"✅ YouTube cookie source configured: {value}")
@@ -765,6 +780,87 @@ def _cmd_configure(args):
     elif args.key == "groq-key":
         config.set("groq_api_key", value)
         print(f"✅ Groq key configured!")
+
+
+def _cmd_sync_profile(args):
+    """Sync Agent Reach configuration into a browser profile directory using Playwright."""
+    import tempfile
+    import json
+    import subprocess
+    import shutil
+    from agent_reach.config import Config
+
+    profile_path = os.path.abspath(os.path.expanduser(args.profile_path))
+    if not os.path.isdir(profile_path):
+        print(f"❌ Profile directory not found: {profile_path}")
+        return
+
+    config = Config()
+    if not any(k in config.data for k in ("twitter_auth_token", "reddit_cookies", "bilibili_sessdata")):
+        print("❌ No cookies configured in Agent Reach. Run `agent-reach configure` first.")
+        return
+
+    print(f"🔄 Syncing to profile: {profile_path}...")
+
+    # Create temporary JSON with cookies
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+        json.dump(config.data, tf)
+        json_path = tf.name
+
+    # Find the JS script inside the package
+    package_dir = os.path.dirname(os.path.abspath(__file__))
+    js_path = os.path.join(package_dir, "integrations", "sync_playwright.js")
+    
+    if not os.path.exists(js_path):
+        print(f"❌ Internal sync script not found: {js_path}")
+        return
+
+    # Try sync with pnpm or npx
+    pnpm_bin = shutil.which("pnpm")
+    npx_bin = shutil.which("npx")
+    
+    # Run from home directory as a better default for global packages
+    home_dir = os.path.expanduser("~")
+    
+    sync_success = False
+    last_err = ""
+
+    # Strategy: Start with pnpm exec, fall back to npx
+    attempts = [
+        [pnpm_bin, "exec", "node"] if pnpm_bin else None,
+        [npx_bin, "node"] if npx_bin else None,
+        ["node"]
+    ]
+
+    for cmd_prefix in [a for a in attempts if a]:
+        try:
+            r = subprocess.run(
+                cmd_prefix + [js_path, profile_path, json_path],
+                capture_output=True, text=True, timeout=60,
+                cwd=home_dir
+            )
+            if r.returncode == 0:
+                sync_success = True
+                break
+            else:
+                last_err = r.stderr or r.stdout
+        except Exception as e:
+            last_err = str(e)
+
+    if sync_success:
+        print("✅ Successfully synced cookies to profile via Playwright!")
+    else:
+        print(f"❌ Sync failed: {last_err}")
+        print()
+        print("To fix, make sure Playwright is available. You can try:")
+        print("  pnpm add -g playwright")
+        print("  # Or install locally in your project and run from there:")
+        print(f"  cd YourProject && npx node \"{js_path}\" \"{profile_path}\" {json_path}")
+    
+    if os.path.exists(json_path):
+        os.unlink(json_path)
+
+
 
 
 def _cmd_uninstall(args):
@@ -785,7 +881,7 @@ def _cmd_uninstall(args):
 
     removed_any = False
 
-    # ── 1. Config directory (~/.agent-reach/) ──
+    # ── 1. Config directory (~/.agent-reach/)
     config_dir = os.path.expanduser("~/.agent-reach")
     if not keep_config:
         if os.path.isdir(config_dir):

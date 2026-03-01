@@ -39,6 +39,7 @@ agent-reach check-update  # check for new versions
 agent-reach configure twitter-cookies "auth_token=xxx; ct0=yyy"
 agent-reach configure proxy http://user:pass@ip:port
 agent-reach configure --from-browser chrome    # auto-extract cookies from local browser
+agent-reach sync-to-profile ~/.agents/browser-profile  # sync Reach cookies to an agent profile (needs Playwright)
 ```
 
 ## Configuring a channel ("帮我配 XXX")

@@ -22,7 +22,9 @@ class Config:
     FEATURE_REQUIREMENTS = {
         "exa_search": ["exa_api_key"],
         "reddit_proxy": ["reddit_proxy"],
+        "reddit_cookies": ["reddit_cookies"],
         "twitter_xreach": ["twitter_auth_token", "twitter_ct0"],
+        "youtube_cookies": ["youtube_cookies_from"],
         "groq_whisper": ["groq_api_key"],
         "github_token": ["github_token"],
     }
@@ -54,6 +56,7 @@ class Config:
         # Restrict permissions — config may contain credentials
         try:
             import stat
+
             self.config_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
         except OSError:
             pass  # Windows or permission edge cases

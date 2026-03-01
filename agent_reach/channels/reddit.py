@@ -17,10 +17,16 @@ class RedditChannel(Channel):
         return "reddit.com" in d or "redd.it" in d
 
     def check(self, config=None):
+        cookies = config.get("reddit_cookies") if config else None
+        if cookies:
+            return "ok", "Cookie 已配置，可读取完整内容。搜索走 Exa"
+            
         proxy = (config.get("reddit_proxy") if config else None) or os.environ.get("REDDIT_PROXY")
         if proxy:
             return "ok", "代理已配置，可读取帖子。搜索走 Exa"
+            
         return "warn", (
-            "无代理。服务器 IP 可能被 Reddit 封锁。配置代理：\n"
-            "  agent-reach configure proxy http://user:pass@ip:port"
+            "无代理或 Cookie。服务器 IP 可能被 Reddit 封锁。配置方式：\n"
+            "  1. 代理：agent-reach configure proxy http://user:pass@ip:port\n"
+            "  2. Cookie：agent-reach configure reddit-cookies \"reddit_session=...; token_v2=...\""
         )
